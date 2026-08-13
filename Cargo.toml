@@ -1,0 +1,11 @@
+[package]
+name = "generative-scoped-tls"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Experimental synchronous scoped TLS with generative bare references"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+generativity = "1.2.1"
