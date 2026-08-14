@@ -1,2 +1,3 @@
 /target
 /miri-tests/async-misuse/target
+/.clice

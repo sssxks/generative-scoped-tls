@@ -27,13 +27,13 @@ fn main() {
 }
 ```
 
-To use scoped tls, assert no suspension using the outmost `unsafe` block.
+To use scoped tls, manually assert no suspension using the outermost `unsafe` block.
 
 Reminder: place the callback before entering the `unsafe` block to prevent accidental unsafe throughout body.
 
 ## The Idea
 
-Scoped TLS stores a pointer to outer stack frame in a special TLS register, allowing context passed implicitly through call stack.
+Scoped TLS stores a pointer to outer stack frame in a TLS slot, allowing context passed implicitly through call stack on the same thread.
 
 ```text
 caller stack                     native TLS
@@ -53,15 +53,15 @@ lifetime(&T from scoped!)
 
 A suspended future can break `scope(deep) ⊆ scope(ScopedKey::set)` by retaining `&T`, returning `Pending` so that `set` returns, and later resuming.
 
-However, for synchronous call tree, the intended discipline is natural; and for async usages, tls will likely cause semantic issues, and we expect the usage for task_local storage instead.
+However, for synchronous call tree, the intended discipline is natural; and for async usages, tls will likely cause semantic issues, and we expect the usage of task-local storage instead.
 
 ## Performance
 
-with one native TLS pointer load + one null check, `scoped!` incurs very little overhead.
+with one native TLS access + one null check, `scoped!` incurs very little overhead.
 
-After binding the resulting `&T`, all subsequent accessordinary reference access.
+After binding the resulting `&T`, all subsequent access are ordinary reference access.
 
-null check exists because in rust there is no way to declare & enforce requirement for these implicit dependencies. if you want to eliminate it, you have to do normal argument passing, which is the simple and explicit way until you hate pervasive `cx: &mut Context` which only carries some semantic-irrelevent component e.g. cache or interner.
+Null check exists because in rust there is no way to declare & enforce requirement for these implicit dependencies, with lite syntax. If you want to eliminate it, you have to do normal argument passing, which is the simple, performant and explicit way until you hate pervasive `cx: &Context` which only carries some semantically irrelevent component e.g. cache or interner.
 
 ## Status
 
