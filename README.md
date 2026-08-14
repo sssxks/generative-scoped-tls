@@ -57,16 +57,12 @@ However, for synchronous call tree, the intended discipline is natural; and for 
 
 ## Performance
 
-`scoped!` incurs very little overhead:
+with one native TLS pointer load + one null check, `scoped!` incurs very little overhead.
 
-```text
-native TLS pointer load
-→ null check
-→ raw pointer becomes &T
-```
+After binding the resulting `&T`, all subsequent accessordinary reference access.
 
-After binding the resulting `&T`, repeated access is ordinary reference access.
+null check exists because in rust there is no way to declare & enforce requirement for these implicit dependencies. if you want to eliminate it, you have to do normal argument passing, which is the simple and explicit way until you hate pervasive `cx: &mut Context` which only carries some semantic-irrelevent component e.g. cache or interner.
 
 ## Status
 
-Prototype. Use at your own risk.
+Codex-generated prototype. Tests and miri fixture are also generated alongside implementation. Use at your own risk.
