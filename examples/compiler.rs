@@ -21,14 +21,14 @@ fn typecheck() {
 fn compile() {
     let cx = Context::default();
 
+    let body = || {
+        parse();
+        typecheck();
+    };
+
     // SAFETY: parse/typecheck and everything they call are synchronous. No
     // reference obtained from CX is retained after this dynamic scope returns.
-    unsafe {
-        CX.set(&cx, || {
-            parse();
-            typecheck();
-        });
-    }
+    unsafe { CX.set(&cx, body) };
 
     assert_eq!(cx.diagnostics.into_inner(), ["parsed", "checked"]);
 }

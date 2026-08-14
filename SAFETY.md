@@ -18,7 +18,7 @@ Its caller promises that every plain reference reconstructed from that binding b
 
 ## Unsafe transition 2: reconstructing `&T`
 
-`scoped_get!` expands to `generativity::make_guard!` at the lookup site and passes that fresh `Guard<'id>` to the hidden `__get_branded` function. `__get_branded` casts the current raw pointer to `&'id T`.
+`scoped!` expands to `generativity::make_guard!` at the lookup site and passes that fresh `Guard<'id>` to the hidden `__get_branded` function. `__get_branded` casts the current raw pointer to `&'id T`.
 
 The generativity brand prevents ordinary Rust lifetime extension/escape from the surrounding lexical region, including coercion to `'static`.
 
@@ -36,17 +36,32 @@ Example shape (do not do this):
 
 ```rust,ignore
 async fn worker() {
-    scoped_get!(let cx = CX);
+    scoped!(let cx = CX);
     pending().await;
     use_it(cx);
 }
 
-unsafe {
-    CX.set(&stack_context, || poll_once(&mut worker_future));
-} // may return while `cx` remains stored in the suspended future
+let poll_worker_once = || poll_once(&mut worker_future);
+// Contract violation: this may return while `cx` remains stored in the
+// suspended future.
+unsafe { CX.set(&stack_context, poll_worker_once) };
 ```
 
 The `unsafe` on `set` makes this a caller contract violation rather than unsoundness reachable from entirely safe code.
+
+An executable version of this misuse lives in
+[`miri-tests/async-misuse`](miri-tests/async-misuse). It is an intentionally
+failing Miri fixture: the future is suspended while retaining the reference,
+the installed value is freed, and polling resumes far enough to dereference the
+dangling reference.
+
+```text
+cargo +nightly miri run --locked --manifest-path miri-tests/async-misuse/Cargo.toml
+```
+
+The expected result is a nonzero exit and a Miri use-after-free diagnostic. Do
+not run the fixture natively: executing a program that deliberately performs
+undefined behavior is not a valid native test.
 
 ## Other boundaries
 

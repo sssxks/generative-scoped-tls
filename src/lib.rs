@@ -9,8 +9,7 @@
 //!   lifetime is bounded by the surrounding lexical scope.
 //!
 //! The resulting use-site is deliberately not CPS:
-//!
-//! ```
+//! ```rust
 //! use generative_scoped_tls::{scoped, scoped_thread_local};
 //!
 //! struct Context { answer: u32 }
@@ -22,11 +21,12 @@
 //! }
 //!
 //! let cx = Context { answer: 42 };
+//! // Construct the callback outside the unsafe block so its body remains a
+//! // safe context.
+//! let body = || deep();
 //! // SAFETY: this call tree is synchronous: no reference obtained through
 //! // `scoped!` can survive after this `set` invocation returns.
-//! unsafe {
-//!     CX.set(&cx, || deep());
-//! }
+//! unsafe { CX.set(&cx, body) };
 //! ```
 //!
 //! # Why is `set` unsafe?
@@ -43,10 +43,9 @@
 //! Normal return and panic unwinding are fine; suspension/yield that lets `set`
 //! return while such a reference remains live is not.
 //!
-//! This design intentionally puts the one `unsafe` at the outer scope boundary,
-//! leaving deep call sites ergonomic and safe.
-
-#![forbid(unsafe_op_in_unsafe_fn)]
+//! Unfortunately this soundness hole requires an `unsafe` to denote.
+//! For ergonomic reasons, it placed at the outer scope boundary, to reduce noise
+//! at deep call sites.
 
 use generativity::Guard;
 use std::cell::Cell;
@@ -239,13 +238,13 @@ macro_rules! scoped_thread_local {
 /// scoped_thread_local!(static N: u32);
 ///
 /// let n = 7;
-/// unsafe {
-///     N.set(&n, || {
-///         scoped!(let x = N);
-///         let _: &u32 = x;
-///         assert_eq!(*x, 7);
-///     });
-/// }
+/// let body = || {
+///     scoped!(let x = N);
+///     let _: &u32 = x;
+///     assert_eq!(*x, 7);
+/// };
+/// // SAFETY: `body` is synchronous and its branded reference cannot escape.
+/// unsafe { N.set(&n, body) };
 /// ```
 ///
 /// A generative borrow cannot be inflated to `'static`:
@@ -263,11 +262,15 @@ macro_rules! scoped_thread_local {
 macro_rules! scoped {
     (let $name:ident = $key:expr $(;)?) => {
         $crate::__private::make_guard!(__generative_scoped_tls_guard);
+
+        // Evaluate caller-provided syntax outside the generated unsafe block.
+        let __generative_scoped_tls_key = &$key;
+
         let $name = unsafe {
             // SAFETY: the guard is fresh at this exact lookup site. The remaining
             // dynamic-scope obligation was explicitly assumed by the unsafe
             // `ScopedKey::set` that installed the pointer.
-            ($key).__get_branded(__generative_scoped_tls_guard)
+            __generative_scoped_tls_key.__get_branded(__generative_scoped_tls_guard)
         };
     };
 }
@@ -294,57 +297,64 @@ mod tests {
     #[test]
     fn plain_reference() {
         let n = 42;
-        unsafe {
-            NUMBER.set(&n, || {
-                scoped!(let x = NUMBER);
-                let _: &u32 = x;
-                assert_eq!(*x, 42);
-            });
-        }
+        let body = || {
+            scoped!(let x = NUMBER);
+            let _: &u32 = x;
+            assert_eq!(*x, 42);
+        };
+
+        // SAFETY: `body` is synchronous and its branded reference cannot escape.
+        unsafe { NUMBER.set(&n, body) };
         assert!(!NUMBER.is_set());
     }
 
     #[test]
     fn repeated_gets_are_independent_brands() {
         let n = 9;
-        unsafe {
-            NUMBER.set(&n, || {
-                scoped!(let a = NUMBER);
-                scoped!(let b = NUMBER);
-                assert_eq!((*a, *b), (9, 9));
-            });
-        }
+        let body = || {
+            scoped!(let a = NUMBER);
+            scoped!(let b = NUMBER);
+            assert_eq!((*a, *b), (9, 9));
+        };
+
+        // SAFETY: `body` is synchronous and its branded references cannot escape.
+        unsafe { NUMBER.set(&n, body) };
     }
 
     #[test]
     fn nesting_restores_previous_binding() {
         let outer = 10;
         let inner = 20;
-        unsafe {
-            NUMBER.set(&outer, || {
-                scoped!(let before = NUMBER);
-                assert_eq!(*before, 10);
+        let outer_body = || {
+            scoped!(let before = NUMBER);
+            assert_eq!(*before, 10);
 
-                NUMBER.set(&inner, || {
-                    scoped!(let during = NUMBER);
-                    assert_eq!(*during, 20);
-                });
+            let inner_body = || {
+                scoped!(let during = NUMBER);
+                assert_eq!(*during, 20);
+            };
+            // SAFETY: `inner_body` is synchronous and `during` cannot escape.
+            unsafe { NUMBER.set(&inner, inner_body) };
 
-                scoped!(let after = NUMBER);
-                assert_eq!(*after, 10);
-                assert_eq!(*before, 10);
-            });
-        }
+            scoped!(let after = NUMBER);
+            assert_eq!(*after, 10);
+            assert_eq!(*before, 10);
+        };
+
+        // SAFETY: `outer_body` is synchronous and its branded references cannot escape.
+        unsafe { NUMBER.set(&outer, outer_body) };
     }
 
     #[test]
     fn panic_unwind_restores_previous_binding() {
         let n = 3;
+        let body = || {
+            assert!(NUMBER.is_set());
+            panic!("boom");
+        };
         let result = catch_unwind(AssertUnwindSafe(|| unsafe {
-            NUMBER.set(&n, || {
-                assert!(NUMBER.is_set());
-                panic!("boom");
-            });
+            // SAFETY: `body` is synchronous; panic unwinding drops the binding.
+            NUMBER.set(&n, body);
         }));
         assert!(result.is_err());
         assert!(!NUMBER.is_set());
@@ -358,23 +368,23 @@ mod tests {
         thread::scope(|scope| {
             scope.spawn(|| {
                 let n = 11;
-                unsafe {
-                    NUMBER.set(&n, || {
-                        START.wait();
-                        scoped!(let x = NUMBER);
-                        assert_eq!(*x, 11);
-                    });
-                }
+                let body = || {
+                    START.wait();
+                    scoped!(let x = NUMBER);
+                    assert_eq!(*x, 11);
+                };
+                // SAFETY: `body` is synchronous and `x` cannot escape.
+                unsafe { NUMBER.set(&n, body) };
             });
 
             let n = 22;
-            unsafe {
-                NUMBER.set(&n, || {
-                    START.wait();
-                    scoped!(let x = NUMBER);
-                    seen.set(*x);
-                });
-            }
+            let body = || {
+                START.wait();
+                scoped!(let x = NUMBER);
+                seen.set(*x);
+            };
+            // SAFETY: `body` is synchronous and `x` cannot escape.
+            unsafe { NUMBER.set(&n, body) };
         });
 
         assert_eq!(seen.get(), 22);
