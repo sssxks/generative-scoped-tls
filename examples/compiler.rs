@@ -9,12 +9,12 @@ struct Context {
 scoped_thread_local!(static CX: Context);
 
 fn parse() {
-    scoped!(let cx = CX);
+    let cx = scoped!(CX);
     cx.diagnostics.borrow_mut().push("parsed".into());
 }
 
 fn typecheck() {
-    scoped!(let cx = CX);
+    let cx = scoped!(CX);
     cx.diagnostics.borrow_mut().push("checked".into());
 }
 
