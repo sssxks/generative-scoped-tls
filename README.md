@@ -1,8 +1,6 @@
 # generative-scoped-tls
 
-Scoped TLS with **bare references** and *native tls lookup*.
-
-Yes this is possible. usage:
+Scoped TLS with **bare references** and native TLS lookup.
 
 ```rust
 use generative_scoped_tls::{scoped, scoped_thread_local};
@@ -14,8 +12,8 @@ struct Context {
 scoped_thread_local!(static CX: Context);
 
 fn deep() {
-    scoped!(let cx = CX);
-    cx.answer; // `cx: &Context`.
+    let cx = scoped!(CX);
+    assert_eq!(cx.answer, 42);
 }
 
 fn main() {
@@ -23,46 +21,59 @@ fn main() {
     let body = || deep();
 
     // SAFETY: the call tree is synchronous.
-    unsafe { CX.set(&cx, body) };
+    unsafe { CX.set(&cx, body) }
 }
 ```
 
-To use scoped tls, manually assert no suspension using the outermost `unsafe` block.
+To use scoped TLS, manually assert no suspension using the outermost `unsafe`
+`set` call. Construct the callback before entering that unsafe block so deep code
+remains a normal safe context.
 
-Reminder: place the callback before entering the `unsafe` block to prevent accidental unsafe throughout body.
+## The idea
 
-## The Idea
-
-Scoped TLS stores a pointer to outer stack frame in a TLS slot, allowing context passed implicitly through call stack on the same thread.
+Scoped TLS stores a pointer to an outer stack frame in a native TLS slot:
 
 ```text
 caller stack                     native TLS
 ┌──────────────┐               ┌──────────────┐
 │      T       │ ◀──────────── │  *const ()   │
 └──────────────┘               └──────────────┘
-
-lifetime(&T from scoped!)
-    ⊆ scope(deep)
-    ⊆ scope(ScopedKey::set)
-    ⊆ lifetime(T)
 ```
 
-- `generativity` crate solves `lifetime(&T from scoped!) ⊆ scope(deep)`.
-- manual synchronous assertion ensures `scope(deep) ⊆ scope(ScopedKey::set)`.
-- `scope(ScopedKey::set) ⊆ lifetime(T)` is enforced by normal borrowck.
+`scoped!(CX)` creates a temporary `ScopedRef<T>` containing the current raw
+pointer and returns `&*that_temporary`. `ScopedRef<T>: Deref<Target = T>`, so the
+result is an ordinary borrow tied to the proxy:
 
-A suspended future can break `scope(deep) ⊆ scope(ScopedKey::set)` by retaining `&T`, returning `Pending` so that `set` returns, and later resuming.
+```text
+lifetime(&T)
+    ⊆ lifetime(ScopedRef temporary)
+    ⊆ lexical caller scope
+    ⊆ dynamic scope(ScopedKey::set)
+    ⊆ lifetime(installed T)
+```
 
-However, for synchronous call tree, the intended discipline is natural; and for async usages, tls will likely cause semantic issues, and we expect the usage of task-local storage instead.
+The first two inclusions come from normal borrow checking plus Rust temporary
+lifetime extension for a `let x = &*temporary` initializer. The third inclusion
+is the caller's unsafe synchronous-execution assertion. The last follows from
+the borrow passed to `set`.
+
+No fresh invariant lifetime brand is required: this crate needs only an upper
+bound on the reconstructed reference lifetime, not a globally unique lifetime
+identity.
+
+A suspended future can break `lexical caller scope ⊆ dynamic scope(set)` by
+retaining the proxy/reference, returning `Pending` so `set` returns, and later
+resuming. Use task-local storage for async control flow instead.
 
 ## Performance
 
-with one native TLS access + one null check, `scoped!` incurs very little overhead.
+A lookup performs one native TLS access and one null check. After
+`let cx = scoped!(CX);`, subsequent accesses are ordinary reference accesses.
 
-After binding the resulting `&T`, all subsequent access are ordinary reference access.
-
-Null check exists because in rust there is no way to declare & enforce requirement for these implicit dependencies, with lite syntax. If you want to eliminate it, you have to do normal argument passing, which is the simple, performant and explicit way until you hate pervasive `cx: &Context` which only carries some semantically irrelevent component e.g. cache or interner.
+The null check exists because Rust has no lightweight syntax for declaring these
+implicit dynamic dependencies. If you need to eliminate it, explicit argument
+passing remains the simplest option.
 
 ## Status
 
-Codex-generated prototype. Tests and miri fixture are also generated alongside implementation. Use at your own risk.
+Experimental prototype. Use at your own risk.
