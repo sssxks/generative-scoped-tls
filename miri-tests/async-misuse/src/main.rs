@@ -29,7 +29,7 @@ impl Future for YieldOnce {
 }
 
 async fn read_after_suspending() -> u32 {
-    scoped!(let cx = CX);
+    let cx = scoped!(CX);
     YieldOnce(false).await;
     cx.answer
 }
@@ -47,8 +47,8 @@ fn main() {
         assert!(poll(future.as_mut()).is_pending());
     };
 
-    // CONTRACT VIOLATION: the suspended future retains a reference obtained
-    // from CX after this invocation of `set` returns.
+    // CONTRACT VIOLATION: the suspended future retains the ScopedRef temporary
+    // and the reference derived from it after this invocation of `set` returns.
     unsafe { CX.set(&value, poll_until_suspended) };
 
     drop(value);
